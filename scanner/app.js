@@ -1359,9 +1359,42 @@ $('#ocrRedo').onclick = () => {
   Promise.all(pages.map(persist)).then(() => { toast('OCR semula dimulakan'); runOcrQueue(); renderHome(); });
 };
 
+/* ---------- Fail dikongsi dari app lain (WhatsApp dll.) ---------- */
+async function takeSharedFiles() {
+  const db = await new Promise((res, rej) => {
+    const r = indexedDB.open('pengimbas-share', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files', { autoIncrement: true });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return new Promise((res, rej) => {
+    const t = db.transaction('files', 'readwrite');
+    const st = t.objectStore('files');
+    const req = st.getAll();
+    st.clear();
+    t.oncomplete = () => res((req.result || []).map((x) => new File([x.blob], x.name, { type: x.type || x.blob.type })));
+    t.onerror = () => rej(t.error);
+  });
+}
+
+async function checkShared() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('share')) return;
+  history.replaceState(null, '', location.pathname);
+  if (q.get('share') === 'error') { toast('Gagal menerima fail yang dikongsi'); return; }
+  try {
+    const files = await takeSharedFiles();
+    if (!files.length) return;
+    toast(files.length > 1 ? `${files.length} fail diterima` : 'Fail diterima');
+    await handleFiles(files, false);
+  } catch (e) {
+    alert('Gagal membaca fail yang dikongsi: ' + e.message);
+  }
+}
+
 syncExportBar();
 if (driveOn()) Drive.init(settings.driveClientId).catch(() => {});
-loadPages();
+loadPages().then(checkShared);
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
