@@ -143,8 +143,77 @@ function bestQuadFromHull(hull) {
   return bq;
 }
 
+function otsu(hist, total) {
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sB = 0, wB = 0, maxV = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = total - wB; if (!wF) break;
+    sB += t * hist[t];
+    const mB = sB / wB, mF = (sum - sB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxV) { maxV = v; thr = t; }
+  }
+  return thr;
+}
+
+// Komponen bersambung terbesar dalam topeng (mask) 0/1
+function largestComponent(mask, w, h) {
+  const N = w * h, lab = new Int32Array(N), stack = new Int32Array(N);
+  let bestId = 0, bestCnt = 0, id = 0;
+  for (let i = 0; i < N; i++) {
+    if (lab[i] || !mask[i]) continue;
+    id++; let sp = 0, cnt = 0;
+    stack[sp++] = i; lab[i] = id;
+    while (sp) {
+      const p = stack[--sp]; cnt++;
+      const x = p % w;
+      if (x > 0 && !lab[p - 1] && mask[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+      if (x < w - 1 && !lab[p + 1] && mask[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+      if (p >= w && !lab[p - w] && mask[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+      if (p < N - w && !lab[p + w] && mask[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+    }
+    if (cnt > bestCnt) { bestCnt = cnt; bestId = id; }
+  }
+  return { lab, id: bestId, cnt: bestCnt };
+}
+
+// Nilai satu calon kawasan: hull → sisi empat → skor (luas × ketepatan bentuk)
+function evalRegion(comp, w, h, shrinkPx) {
+  if (comp.cnt < w * h * 0.08) return null;
+  const { lab, id } = comp, pts = [];
+  for (let y = 0; y < h; y++) {
+    let first = -1, last = -1;
+    for (let x = 0; x < w; x++) if (lab[y * w + x] === id) { if (first < 0) first = x; last = x; }
+    if (first >= 0) { pts.push([first, y]); if (last !== first) pts.push([last + 1, y]); }
+  }
+  const q = bestQuadFromHull(convexHull(pts));
+  if (!q) return null;
+  let quad = orderQuad(q);
+  const A = polyArea(quad);
+  const fit = comp.cnt / A;
+  if (A < w * h * 0.1 || A > w * h * 0.995 || fit < 0.82) return null;
+  // sudut dalaman munasabah (bukan segi tiga / terlalu tajam)
+  for (let i = 0; i < 4; i++) {
+    const p = quad[i], a = quad[(i + 3) % 4], b = quad[(i + 1) % 4];
+    const v1 = [a[0] - p[0], a[1] - p[1]], v2 = [b[0] - p[0], b[1] - p[1]];
+    const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) + 1e-9);
+    if (Math.abs(cos) > 0.8) return null; // < ~37° atau > ~143°
+  }
+  if (shrinkPx) {
+    const cx = quad.reduce((s, p) => s + p[0], 0) / 4, cy = quad.reduce((s, p) => s + p[1], 0) / 4;
+    quad = quad.map(([x, y]) => {
+      const d = Math.hypot(x - cx, y - cy) || 1;
+      const k = (shrinkPx * 1.41) / d;
+      return [x + (cx - x) * k, y + (cy - y) * k];
+    });
+  }
+  return { quad: quad.map(([x, y]) => [x / w, y / h]), score: A * Math.min(1, fit) ** 4 };
+}
+
 function detectQuad(src) {
-  const S = 360;
+  const S = 400;
   const sc = Math.min(1, S / Math.max(src.width, src.height));
   const c = mkCanvas(src.width * sc, src.height * sc);
   const w = c.width, h = c.height, N = w * h;
@@ -169,55 +238,66 @@ function detectQuad(src) {
     return o;
   };
   g = blur(blur(g, true), false);
+  const cands = [];
 
-  // ambang Otsu
-  const hist = new Array(256).fill(0);
-  for (let i = 0; i < N; i++) hist[g[i] | 0]++;
-  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sB = 0, wB = 0, maxV = 0, thr = 128;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (!wB) continue;
-    const wF = N - wB; if (!wF) break;
-    sB += t * hist[t];
-    const mB = sB / wB, mF = (sum - sB) / wF;
-    const v = wB * wF * (mB - mF) * (mB - mF);
-    if (v > maxV) { maxV = v; thr = t; }
-  }
-
-  // komponen terang terbesar (kertas biasanya lebih cerah dari latar)
-  const lab = new Int32Array(N);
-  const stack = new Int32Array(N);
-  let bestId = 0, bestCnt = 0, id = 0;
-  for (let i = 0; i < N; i++) {
-    if (lab[i] || g[i] <= thr) continue;
-    id++; let sp = 0, cnt = 0;
-    stack[sp++] = i; lab[i] = id;
-    while (sp) {
-      const p = stack[--sp]; cnt++;
-      const x = p % w, y = (p / w) | 0;
-      if (x > 0 && !lab[p - 1] && g[p - 1] > thr) { lab[p - 1] = id; stack[sp++] = p - 1; }
-      if (x < w - 1 && !lab[p + 1] && g[p + 1] > thr) { lab[p + 1] = id; stack[sp++] = p + 1; }
-      if (y > 0 && !lab[p - w] && g[p - w] > thr) { lab[p - w] = id; stack[sp++] = p - w; }
-      if (y < h - 1 && !lab[p + w] && g[p + w] > thr) { lab[p + w] = id; stack[sp++] = p + w; }
+  // Calon A: kawasan yang dikelilingi tepi (Sobel) — tidak bergantung pada warna latar
+  {
+    const mag = new Float32Array(N);
+    const hist = new Uint32Array(256);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = g[i - w + 1] + 2 * g[i + 1] + g[i + w + 1] - g[i - w - 1] - 2 * g[i - 1] - g[i + w - 1];
+      const gy = g[i + w - 1] + 2 * g[i + w] + g[i + w + 1] - g[i - w - 1] - 2 * g[i - w] - g[i - w + 1];
+      const m = Math.min(255, Math.hypot(gx, gy) / 4);
+      mag[i] = m; hist[m | 0]++;
     }
-    if (cnt > bestCnt) { bestCnt = cnt; bestId = id; }
+    for (const lowMul of [1, 0.55, 0.3]) {
+      const thr = Math.max(5, otsu(hist, N) * lowMul);
+      let edge = new Uint8Array(N);
+      for (let i = 0; i < N; i++) edge[i] = mag[i] > thr ? 1 : 0;
+      // dilasi 2px untuk menutup celah kecil pada tepi kertas
+      for (let pass = 0; pass < 2; pass++) {
+        const e2 = new Uint8Array(N);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          e2[i] = edge[i] || (x > 0 && edge[i - 1]) || (x < w - 1 && edge[i + 1]) ||
+            (y > 0 && edge[i - w]) || (y < h - 1 && edge[i + w]) ? 1 : 0;
+        }
+        edge = e2;
+      }
+      // banjir dari sempadan imej melalui piksel bukan-tepi = "luar"
+      const out = new Uint8Array(N), st = new Int32Array(N);
+      let sp = 0;
+      const seed = (i) => { if (!edge[i] && !out[i]) { out[i] = 1; st[sp++] = i; } };
+      for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+      for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+      while (sp) {
+        const p = st[--sp], x = p % w;
+        if (x > 0) seed(p - 1);
+        if (x < w - 1) seed(p + 1);
+        if (p >= w) seed(p - w);
+        if (p < N - w) seed(p + w);
+      }
+      for (let i = 0; i < N; i++) out[i] = out[i] ? 0 : 1;
+      const r = evalRegion(largestComponent(out, w, h), w, h, 2.5);
+      if (r) { r.score *= 1.1; cands.push(r); }
+    }
   }
-  if (bestCnt < N * 0.08) return { quad: INSET_QUAD, found: false };
 
-  // titik sempadan komponen → hull cembung → sisi empat terbaik
-  const pts = [];
-  for (let y = 0; y < h; y++) {
-    let first = -1, last = -1;
-    for (let x = 0; x < w; x++) if (lab[y * w + x] === bestId) { if (first < 0) first = x; last = x; }
-    if (first >= 0) { pts.push([first, y]); if (last !== first) pts.push([last, y]); }
+  // Calon B: komponen terang terbesar (kertas cerah atas latar gelap)
+  {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < N; i++) hist[g[i] | 0]++;
+    const thr = otsu(hist, N);
+    const mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) mask[i] = g[i] > thr ? 1 : 0;
+    const r = evalRegion(largestComponent(mask, w, h), w, h, 0);
+    if (r) cands.push(r);
   }
-  const hull = convexHull(pts);
-  const q = bestQuadFromHull(hull);
-  if (!q) return { quad: INSET_QUAD, found: false };
-  const quad = orderQuad(q.map(([x, y]) => [(x + 0.5) / w, (y + 0.5) / h]));
-  const a = polyArea(quad);
-  if (a < 0.08 || a > 0.995) return { quad: a > 0.995 ? FULL_QUAD : INSET_QUAD, found: false };
-  return { quad, found: true };
+
+  if (!cands.length) return { quad: INSET_QUAD, found: false };
+  cands.sort((a, b) => b.score - a.score);
+  return { quad: cands[0].quad, found: true };
 }
 
 /* ------------------------------------------------------------------ */
@@ -603,6 +683,21 @@ function drawCrop() {
   P.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
   c.closePath();
   c.stroke();
+  // pemegang tengah sisi (tarik seluruh sisi)
+  for (let i = 0; i < 4; i++) {
+    const p = P[i], q = P[(i + 1) % 4];
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    const ang = Math.atan2(q[1] - p[1], q[0] - p[0]);
+    c.save();
+    c.translate(mx, my);
+    c.rotate(ang);
+    c.beginPath();
+    const L = (crop.drag === 4 + i ? 34 : 26) * r, T = 10 * r;
+    c.roundRect ? c.roundRect(-L / 2, -T / 2, L, T, T / 2) : c.rect(-L / 2, -T / 2, L, T);
+    c.fillStyle = '#fff';
+    c.fill();
+    c.restore();
+  }
   P.forEach(([x, y], i) => {
     c.beginPath();
     c.arc(x, y, (crop.drag === i ? 16 : 12) * r, 0, Math.PI * 2);
@@ -644,43 +739,76 @@ function evtNorm(e) {
   const r = cropCanvas.getBoundingClientRect();
   return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, r];
 }
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const cropWrap = $('#cropWrap');
 
-cropCanvas.addEventListener('pointerdown', (e) => {
-  if (!cur) return;
+// Acara dipasang pada seluruh kawasan (bukan kanvas sahaja) supaya sentuhan
+// yang sedikit terkeluar dari gambar masih boleh menarik sudut/sisi.
+cropWrap.addEventListener('pointerdown', (e) => {
+  if (!cur || crop.drag >= 0) return;
   const [nx, ny, r] = evtNorm(e);
-  let best = -1, bd = 44; // px
-  cur.quad.forEach(([x, y], i) => {
-    const d = Math.hypot((x - nx) * r.width, (y - ny) * r.height);
-    if (d < bd) { bd = d; best = i; }
+  const Q = cur.quad;
+  const cands = Q.map((p) => p);
+  for (let i = 0; i < 4; i++) {
+    const p = Q[i], q = Q[(i + 1) % 4];
+    cands.push([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]);
+  }
+  let best = -1, bd = 56; // px
+  cands.forEach(([x, y], i) => {
+    const dd = Math.hypot((x - nx) * r.width, (y - ny) * r.height) + (i >= 4 ? 8 : 0); // utamakan sudut
+    if (dd < bd) { bd = dd; best = i; }
   });
   if (best < 0) return;
   crop.drag = best;
-  crop.grab = [cur.quad[best][0] - nx, cur.quad[best][1] - ny];
-  cropCanvas.setPointerCapture(e.pointerId);
+  crop.start = [nx, ny];
+  crop.q0 = Q.map((p) => p.slice());
+  crop.pid = e.pointerId;
+  try { cropWrap.setPointerCapture(e.pointerId); } catch {}
   loupe.hidden = false;
-  drawLoupe(...cur.quad[best]);
+  drawLoupe(...cands[best]);
   drawCrop();
   e.preventDefault();
 });
-cropCanvas.addEventListener('pointermove', (e) => {
-  if (crop.drag < 0) return;
+cropWrap.addEventListener('pointermove', (e) => {
+  if (crop.drag < 0 || e.pointerId !== crop.pid) return;
+  e.preventDefault();
   const [nx, ny] = evtNorm(e);
-  const x = Math.min(1, Math.max(0, nx + crop.grab[0]));
-  const y = Math.min(1, Math.max(0, ny + crop.grab[1]));
-  cur.quad = cur.quad.slice();
-  cur.quad[crop.drag] = [x, y];
+  const dx = nx - crop.start[0], dy = ny - crop.start[1];
+  const q = crop.q0.map((p) => p.slice());
+  let look;
+  if (crop.drag < 4) {
+    const i = crop.drag;
+    q[i] = [clamp01(crop.q0[i][0] + dx), clamp01(crop.q0[i][1] + dy)];
+    look = q[i];
+  } else {
+    const i = crop.drag - 4, j = (i + 1) % 4;
+    // hadkan anjakan supaya kedua-dua hujung kekal dalam gambar
+    let ddx = dx, ddy = dy;
+    for (const k of [i, j]) {
+      ddx = Math.min(1 - crop.q0[k][0], Math.max(-crop.q0[k][0], ddx));
+      ddy = Math.min(1 - crop.q0[k][1], Math.max(-crop.q0[k][1], ddy));
+    }
+    q[i] = [crop.q0[i][0] + ddx, crop.q0[i][1] + ddy];
+    q[j] = [crop.q0[j][0] + ddx, crop.q0[j][1] + ddy];
+    look = [(q[i][0] + q[j][0]) / 2, (q[i][1] + q[j][1]) / 2];
+  }
+  cur.quad = q;
   drawCrop();
-  drawLoupe(x, y);
+  drawLoupe(...look);
 });
-const endDrag = () => {
-  if (crop.drag < 0) return;
+const endDrag = (e) => {
+  if (crop.drag < 0 || (e && e.pointerId !== crop.pid)) return;
   crop.drag = -1;
   loupe.hidden = true;
   cur.quad = orderQuad(cur.quad);
   drawCrop();
 };
-cropCanvas.addEventListener('pointerup', endDrag);
-cropCanvas.addEventListener('pointercancel', endDrag);
+cropWrap.addEventListener('pointerup', endDrag);
+cropWrap.addEventListener('pointercancel', endDrag);
+cropWrap.addEventListener('lostpointercapture', endDrag);
+// Sandaran untuk pelayar yang abaikan touch-action: halang tatal/tarik-untuk-muat-semula
+cropWrap.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+cropWrap.addEventListener('touchstart', (e) => { if (e.touches.length === 1) e.preventDefault(); }, { passive: false });
 window.addEventListener('resize', () => { if ($('#crop').classList.contains('active')) layoutCrop(); });
 
 $('#cropAuto').onclick = () => {
