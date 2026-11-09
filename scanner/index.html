@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pengimbas Dokumen</title>
+<meta name="theme-color" content="#0f766e">
+<meta name="description" content="Imbas dokumen dengan kamera telefon, potong, tingkatkan dan simpan sebagai PDF. Semua diproses dalam peranti anda.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pengimbas">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ========== HOME ========== -->
+<section id="home" class="view active">
+  <header class="bar">
+    <h1>Pengimbas Dokumen</h1>
+    <button id="btnClear" class="icon-btn" title="Padam semua" aria-label="Padam semua">🗑</button>
+  </header>
+
+  <main class="home-main">
+    <div id="empty" class="empty">
+      <div class="empty-icon">📄</div>
+      <p>Belum ada halaman.<br>Tekan <b>Kamera</b> untuk mula mengimbas.</p>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <div class="export-bar" id="exportBar" hidden>
+    <label class="sel">Saiz halaman
+      <select id="pageSize">
+        <option value="a4">A4</option>
+        <option value="letter">Letter</option>
+        <option value="fit">Ikut imej</option>
+      </select>
+    </label>
+    <input id="docName" class="doc-name" type="text" aria-label="Nama fail">
+    <div class="export-btns">
+      <button id="btnPdf" class="btn primary">Simpan PDF</button>
+      <button id="btnShare" class="btn" hidden>Kongsi</button>
+    </div>
+  </div>
+
+  <nav class="actions">
+    <label class="btn big">
+      🖼 Galeri
+      <input id="inGallery" type="file" accept="image/*" multiple hidden>
+    </label>
+    <label class="btn big primary">
+      📷 Kamera
+      <input id="inCamera" type="file" accept="image/*" capture="environment" hidden>
+    </label>
+  </nav>
+</section>
+
+<!-- ========== CROP ========== -->
+<section id="crop" class="view">
+  <header class="bar">
+    <button id="cropCancel" class="icon-btn" aria-label="Batal">✕</button>
+    <h1>Laraskan Sudut</h1>
+    <span class="spacer"></span>
+  </header>
+  <div id="cropWrap" class="crop-wrap">
+    <canvas id="cropCanvas"></canvas>
+    <canvas id="loupe" class="loupe" width="240" height="240" hidden></canvas>
+  </div>
+  <nav class="actions">
+    <button id="cropAuto" class="btn">Auto</button>
+    <button id="cropFull" class="btn">Penuh</button>
+    <button id="cropNext" class="btn primary">Seterusnya</button>
+  </nav>
+</section>
+
+<!-- ========== EDIT ========== -->
+<section id="edit" class="view">
+  <header class="bar">
+    <button id="editBack" class="icon-btn" aria-label="Kembali">✕</button>
+    <h1 id="editTitle">Halaman</h1>
+    <button id="editDelete" class="icon-btn" aria-label="Padam halaman" title="Padam halaman">🗑</button>
+  </header>
+  <div id="previewWrap" class="preview-wrap"></div>
+  <div class="filters" id="filters">
+    <button data-f="magic">Ajaib</button>
+    <button data-f="enhance">Terang</button>
+    <button data-f="original">Asal</button>
+    <button data-f="gray">Kelabu</button>
+    <button data-f="bw">Hitam Putih</button>
+  </div>
+  <nav class="actions tools">
+    <button id="rotL" class="btn" title="Putar kiri">⟲</button>
+    <button id="rotR" class="btn" title="Putar kanan">⟳</button>
+    <button id="recrop" class="btn" title="Potong semula">✂ Potong</button>
+    <button id="moveL" class="btn" title="Alih ke depan">◀</button>
+    <button id="moveR" class="btn" title="Alih ke belakang">▶</button>
+    <button id="saveJpg" class="btn" title="Simpan JPG">JPG</button>
+    <button id="editSave" class="btn primary">✓ Simpan</button>
+  </nav>
+</section>
+
+<div id="busy" class="busy" hidden><div class="spinner"></div><p id="busyText">Memproses…</p></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
