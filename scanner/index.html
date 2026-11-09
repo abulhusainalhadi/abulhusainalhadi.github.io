@@ -20,7 +20,9 @@
   <header class="bar">
     <h1>Pengimbas Dokumen</h1>
     <button id="btnClear" class="icon-btn" title="Padam semua" aria-label="Padam semua">🗑</button>
+    <button id="btnSettings" class="icon-btn" title="Tetapan" aria-label="Tetapan">⚙</button>
   </header>
+  <div id="statusLine" class="status-line" hidden></div>
 
   <main class="home-main">
     <div id="empty" class="empty">
@@ -31,7 +33,14 @@
   </main>
 
   <div class="export-bar" id="exportBar" hidden>
-    <label class="sel">Saiz halaman
+    <label class="sel">Format
+      <select id="fmt">
+        <option value="pdf">PDF</option>
+        <option value="jpg">JPG (gambar)</option>
+        <option value="txt">Teks (.txt)</option>
+      </select>
+    </label>
+    <label class="sel" id="pageSizeWrap">Saiz halaman
       <select id="pageSize">
         <option value="a4">A4</option>
         <option value="letter">Letter</option>
@@ -40,15 +49,16 @@
     </label>
     <input id="docName" class="doc-name" type="text" aria-label="Nama fail">
     <div class="export-btns">
-      <button id="btnPdf" class="btn primary">Simpan PDF</button>
+      <button id="btnExport" class="btn primary">Simpan PDF</button>
       <button id="btnShare" class="btn" hidden>Kongsi</button>
+      <button id="btnDrive" class="btn" hidden title="Muat naik ke Google Drive">☁ Drive</button>
     </div>
   </div>
 
   <nav class="actions">
     <label class="btn big">
       🖼 Galeri
-      <input id="inGallery" type="file" accept="image/*" multiple hidden>
+      <input id="inGallery" type="file" accept="image/*,application/pdf,.pdf" multiple hidden>
     </label>
     <label class="btn big primary">
       📷 Kamera
@@ -96,14 +106,88 @@
     <button id="recrop" class="btn" title="Potong semula">✂ Potong</button>
     <button id="moveL" class="btn" title="Alih ke depan">◀</button>
     <button id="moveR" class="btn" title="Alih ke belakang">▶</button>
+    <button id="btnText" class="btn" title="Teks (OCR)">Aa Teks</button>
     <button id="saveJpg" class="btn" title="Simpan JPG">JPG</button>
     <button id="editSave" class="btn primary">✓ Simpan</button>
   </nav>
+  <div id="textPanel" class="text-panel" hidden>
+    <div class="text-head">
+      <b>Teks dikenal pasti (OCR)</b>
+      <button id="textClose" class="icon-btn" aria-label="Tutup">✕</button>
+    </div>
+    <p id="ocrEmpty" class="hint" hidden>Tiada teks dikesan. Cuba penapis "Hitam Putih" atau "Ajaib", atau gambar yang lebih jelas.</p>
+    <textarea id="ocrText" spellcheck="false"></textarea>
+    <button id="textCopy" class="btn primary">Salin teks</button>
+  </div>
+</section>
+
+<!-- ========== TETAPAN ========== -->
+<section id="settings" class="view">
+  <header class="bar">
+    <button id="settingsBack" class="icon-btn" aria-label="Kembali">←</button>
+    <h1>Tetapan</h1>
+    <span class="spacer"></span>
+  </header>
+  <main class="settings-main">
+    <h2>OCR (kenal pasti teks)</h2>
+    <label class="row"><input type="checkbox" data-key="autoOcr"> OCR automatik untuk setiap halaman</label>
+    <label class="field">Bahasa dokumen
+      <select data-key="ocrLang">
+        <option value="msa+eng">Melayu + Inggeris</option>
+        <option value="msa">Melayu</option>
+        <option value="eng">Inggeris</option>
+      </select>
+    </label>
+    <p class="hint">Teks dimasukkan ke dalam PDF (boleh dicari &amp; disalin) dan boleh dilihat melalui butang <b>Aa Teks</b>.
+      OCR dibuat dalam telefon; kali pertama perlu internet untuk memuat data bahasa (~4 MB).
+      Untuk <b>tulisan tangan</b>, hidupkan "Salinan Google Docs" di bawah — OCR Google lebih baik untuk tulisan tangan.</p>
+    <button id="ocrRedo" class="btn">OCR semula semua halaman</button>
+
+    <h2>Format lalai</h2>
+    <label class="field">Simpan sebagai
+      <select data-key="format">
+        <option value="pdf">PDF</option>
+        <option value="jpg">JPG (gambar)</option>
+        <option value="txt">Teks (.txt)</option>
+      </select>
+    </label>
+    <p class="hint">Untuk menukar fail PDF sedia ada kepada JPG: tekan <b>Galeri</b>, pilih fail PDF, kemudian pilih format JPG dan tekan Simpan.</p>
+
+    <h2>Google Drive</h2>
+    <label class="field">Google OAuth Client ID
+      <input type="text" data-key="driveClientId" placeholder="xxxxxxxx.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <p id="driveState" class="hint"></p>
+    <div class="row-btns">
+      <button id="driveConnect" class="btn primary">Sambung Google Drive</button>
+      <button id="driveDisconnect" class="btn">Putuskan</button>
+    </div>
+    <label class="field">Nama folder di Drive
+      <input type="text" data-key="driveFolder">
+    </label>
+    <label class="row"><input type="checkbox" data-key="driveAuto"> Muat naik automatik</label>
+    <label class="row sub"><input type="checkbox" data-key="drivePages"> Setiap halaman yang diimbas (JPG)</label>
+    <label class="row sub"><input type="checkbox" data-key="drivePdf"> PDF bila tekan "Simpan PDF"</label>
+    <label class="row sub"><input type="checkbox" data-key="driveDocs"> Salinan Google Docs (OCR Google — sesuai tulisan tangan)</label>
+    <details class="help">
+      <summary>Cara dapatkan Client ID (sekali sahaja)</summary>
+      <ol>
+        <li>Buka <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Cloud Console → Google Drive API</a> dan tekan <b>Enable</b> (boleh guna projek sedia ada).</li>
+        <li>Pergi ke <b>APIs &amp; Services → OAuth consent screen</b>. Jika belum ada, pilih <b>External</b>, isi nama app, dan tambah emel anda sebagai <b>Test user</b>.</li>
+        <li>Pergi ke <b>Credentials → Create credentials → OAuth client ID</b>, jenis <b>Web application</b>.</li>
+        <li>Di <b>Authorized JavaScript origins</b>, tambah: <code id="originHint"></code></li>
+        <li>Salin <b>Client ID</b> dan tampal di atas, kemudian tekan <b>Sambung Google Drive</b>.</li>
+      </ol>
+      <p class="hint">App hanya meminta kebenaran <code>drive.file</code> — ia hanya boleh melihat fail yang ia cipta sendiri, bukan fail lain dalam Drive anda.</p>
+    </details>
+  </main>
 </section>
 
 <div id="busy" class="busy" hidden><div class="spinner"></div><p id="busyText">Memproses…</p></div>
 <div id="toast" class="toast" hidden></div>
 
+<script src="ocr.js"></script>
+<script src="drive.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

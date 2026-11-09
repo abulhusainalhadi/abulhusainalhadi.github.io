@@ -143,8 +143,77 @@ function bestQuadFromHull(hull) {
   return bq;
 }
 
+function otsu(hist, total) {
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sB = 0, wB = 0, maxV = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = total - wB; if (!wF) break;
+    sB += t * hist[t];
+    const mB = sB / wB, mF = (sum - sB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxV) { maxV = v; thr = t; }
+  }
+  return thr;
+}
+
+// Komponen bersambung terbesar dalam topeng (mask) 0/1
+function largestComponent(mask, w, h) {
+  const N = w * h, lab = new Int32Array(N), stack = new Int32Array(N);
+  let bestId = 0, bestCnt = 0, id = 0;
+  for (let i = 0; i < N; i++) {
+    if (lab[i] || !mask[i]) continue;
+    id++; let sp = 0, cnt = 0;
+    stack[sp++] = i; lab[i] = id;
+    while (sp) {
+      const p = stack[--sp]; cnt++;
+      const x = p % w;
+      if (x > 0 && !lab[p - 1] && mask[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+      if (x < w - 1 && !lab[p + 1] && mask[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+      if (p >= w && !lab[p - w] && mask[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+      if (p < N - w && !lab[p + w] && mask[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+    }
+    if (cnt > bestCnt) { bestCnt = cnt; bestId = id; }
+  }
+  return { lab, id: bestId, cnt: bestCnt };
+}
+
+// Nilai satu calon kawasan: hull → sisi empat → skor (luas × ketepatan bentuk)
+function evalRegion(comp, w, h, shrinkPx) {
+  if (comp.cnt < w * h * 0.08) return null;
+  const { lab, id } = comp, pts = [];
+  for (let y = 0; y < h; y++) {
+    let first = -1, last = -1;
+    for (let x = 0; x < w; x++) if (lab[y * w + x] === id) { if (first < 0) first = x; last = x; }
+    if (first >= 0) { pts.push([first, y]); if (last !== first) pts.push([last + 1, y]); }
+  }
+  const q = bestQuadFromHull(convexHull(pts));
+  if (!q) return null;
+  let quad = orderQuad(q);
+  const A = polyArea(quad);
+  const fit = comp.cnt / A;
+  if (A < w * h * 0.1 || A > w * h * 0.995 || fit < 0.82) return null;
+  // sudut dalaman munasabah (bukan segi tiga / terlalu tajam)
+  for (let i = 0; i < 4; i++) {
+    const p = quad[i], a = quad[(i + 3) % 4], b = quad[(i + 1) % 4];
+    const v1 = [a[0] - p[0], a[1] - p[1]], v2 = [b[0] - p[0], b[1] - p[1]];
+    const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) + 1e-9);
+    if (Math.abs(cos) > 0.8) return null; // < ~37° atau > ~143°
+  }
+  if (shrinkPx) {
+    const cx = quad.reduce((s, p) => s + p[0], 0) / 4, cy = quad.reduce((s, p) => s + p[1], 0) / 4;
+    quad = quad.map(([x, y]) => {
+      const d = Math.hypot(x - cx, y - cy) || 1;
+      const k = (shrinkPx * 1.41) / d;
+      return [x + (cx - x) * k, y + (cy - y) * k];
+    });
+  }
+  return { quad: quad.map(([x, y]) => [x / w, y / h]), score: A * Math.min(1, fit) ** 4 };
+}
+
 function detectQuad(src) {
-  const S = 360;
+  const S = 400;
   const sc = Math.min(1, S / Math.max(src.width, src.height));
   const c = mkCanvas(src.width * sc, src.height * sc);
   const w = c.width, h = c.height, N = w * h;
@@ -169,55 +238,66 @@ function detectQuad(src) {
     return o;
   };
   g = blur(blur(g, true), false);
+  const cands = [];
 
-  // ambang Otsu
-  const hist = new Array(256).fill(0);
-  for (let i = 0; i < N; i++) hist[g[i] | 0]++;
-  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sB = 0, wB = 0, maxV = 0, thr = 128;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (!wB) continue;
-    const wF = N - wB; if (!wF) break;
-    sB += t * hist[t];
-    const mB = sB / wB, mF = (sum - sB) / wF;
-    const v = wB * wF * (mB - mF) * (mB - mF);
-    if (v > maxV) { maxV = v; thr = t; }
-  }
-
-  // komponen terang terbesar (kertas biasanya lebih cerah dari latar)
-  const lab = new Int32Array(N);
-  const stack = new Int32Array(N);
-  let bestId = 0, bestCnt = 0, id = 0;
-  for (let i = 0; i < N; i++) {
-    if (lab[i] || g[i] <= thr) continue;
-    id++; let sp = 0, cnt = 0;
-    stack[sp++] = i; lab[i] = id;
-    while (sp) {
-      const p = stack[--sp]; cnt++;
-      const x = p % w, y = (p / w) | 0;
-      if (x > 0 && !lab[p - 1] && g[p - 1] > thr) { lab[p - 1] = id; stack[sp++] = p - 1; }
-      if (x < w - 1 && !lab[p + 1] && g[p + 1] > thr) { lab[p + 1] = id; stack[sp++] = p + 1; }
-      if (y > 0 && !lab[p - w] && g[p - w] > thr) { lab[p - w] = id; stack[sp++] = p - w; }
-      if (y < h - 1 && !lab[p + w] && g[p + w] > thr) { lab[p + w] = id; stack[sp++] = p + w; }
+  // Calon A: kawasan yang dikelilingi tepi (Sobel) — tidak bergantung pada warna latar
+  {
+    const mag = new Float32Array(N);
+    const hist = new Uint32Array(256);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = g[i - w + 1] + 2 * g[i + 1] + g[i + w + 1] - g[i - w - 1] - 2 * g[i - 1] - g[i + w - 1];
+      const gy = g[i + w - 1] + 2 * g[i + w] + g[i + w + 1] - g[i - w - 1] - 2 * g[i - w] - g[i - w + 1];
+      const m = Math.min(255, Math.hypot(gx, gy) / 4);
+      mag[i] = m; hist[m | 0]++;
     }
-    if (cnt > bestCnt) { bestCnt = cnt; bestId = id; }
+    for (const lowMul of [1, 0.55, 0.3]) {
+      const thr = Math.max(5, otsu(hist, N) * lowMul);
+      let edge = new Uint8Array(N);
+      for (let i = 0; i < N; i++) edge[i] = mag[i] > thr ? 1 : 0;
+      // dilasi 2px untuk menutup celah kecil pada tepi kertas
+      for (let pass = 0; pass < 2; pass++) {
+        const e2 = new Uint8Array(N);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          e2[i] = edge[i] || (x > 0 && edge[i - 1]) || (x < w - 1 && edge[i + 1]) ||
+            (y > 0 && edge[i - w]) || (y < h - 1 && edge[i + w]) ? 1 : 0;
+        }
+        edge = e2;
+      }
+      // banjir dari sempadan imej melalui piksel bukan-tepi = "luar"
+      const out = new Uint8Array(N), st = new Int32Array(N);
+      let sp = 0;
+      const seed = (i) => { if (!edge[i] && !out[i]) { out[i] = 1; st[sp++] = i; } };
+      for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+      for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+      while (sp) {
+        const p = st[--sp], x = p % w;
+        if (x > 0) seed(p - 1);
+        if (x < w - 1) seed(p + 1);
+        if (p >= w) seed(p - w);
+        if (p < N - w) seed(p + w);
+      }
+      for (let i = 0; i < N; i++) out[i] = out[i] ? 0 : 1;
+      const r = evalRegion(largestComponent(out, w, h), w, h, 2.5);
+      if (r) { r.score *= 1.1; cands.push(r); }
+    }
   }
-  if (bestCnt < N * 0.08) return { quad: INSET_QUAD, found: false };
 
-  // titik sempadan komponen → hull cembung → sisi empat terbaik
-  const pts = [];
-  for (let y = 0; y < h; y++) {
-    let first = -1, last = -1;
-    for (let x = 0; x < w; x++) if (lab[y * w + x] === bestId) { if (first < 0) first = x; last = x; }
-    if (first >= 0) { pts.push([first, y]); if (last !== first) pts.push([last, y]); }
+  // Calon B: komponen terang terbesar (kertas cerah atas latar gelap)
+  {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < N; i++) hist[g[i] | 0]++;
+    const thr = otsu(hist, N);
+    const mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) mask[i] = g[i] > thr ? 1 : 0;
+    const r = evalRegion(largestComponent(mask, w, h), w, h, 0);
+    if (r) cands.push(r);
   }
-  const hull = convexHull(pts);
-  const q = bestQuadFromHull(hull);
-  if (!q) return { quad: INSET_QUAD, found: false };
-  const quad = orderQuad(q.map(([x, y]) => [(x + 0.5) / w, (y + 0.5) / h]));
-  const a = polyArea(quad);
-  if (a < 0.08 || a > 0.995) return { quad: a > 0.995 ? FULL_QUAD : INSET_QUAD, found: false };
-  return { quad, found: true };
+
+  if (!cands.length) return { quad: INSET_QUAD, found: false };
+  cands.sort((a, b) => b.score - a.score);
+  return { quad: cands[0].quad, found: true };
 }
 
 /* ------------------------------------------------------------------ */
@@ -399,23 +479,56 @@ function applyFilter(c, f) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Penjana PDF (JPEG terbenam, tanpa pustaka luar)                      */
+/* Penjana PDF (JPEG terbenam + lapisan teks OCR tersembunyi)           */
 /* ------------------------------------------------------------------ */
 const PAGE_SIZES = { a4: [595.28, 841.89], letter: [612, 792] };
 
+// Rentetan → bait Latin-1 (WinAnsi); aksara di luar julat diganti '?'
+function latin1(str) {
+  const b = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    b[i] = c < 256 ? c : 63;
+  }
+  return b;
+}
+const pdfEsc = (t) => t.replace(/[\\()]/g, (m) => '\\' + m).replace(/[\r\n\t]/g, ' ');
+let measureCtx;
+function textWidth(t, size) {
+  if (!measureCtx) measureCtx = mkCanvas(1, 1).getContext('2d');
+  measureCtx.font = `${size}px Helvetica, Arial, sans-serif`;
+  return measureCtx.measureText(t).width || size * 0.5 * t.length;
+}
+
+function ocrLayer(pg, dx, dy, dw, dh) {
+  const o = pg.ocr;
+  if (!o || !o.words || !o.words.length) return '';
+  const sx = dw / o.w, sy = dh / o.h, f = (v) => v.toFixed(2);
+  let s = 'BT 3 Tr\n';
+  for (const [t, x0, y0, x1, y1] of o.words) {
+    const hPt = (y1 - y0) * sy, wPt = (x1 - x0) * sx;
+    if (hPt <= 0 || wPt <= 0) continue;
+    const size = Math.max(1, hPt);
+    const tz = Math.max(10, Math.min(1000, (wPt / textWidth(t, size)) * 100));
+    const X = dx + x0 * sx, Y = dy + (o.h - y1) * sy + hPt * 0.2;
+    s += `/F1 ${f(size)} Tf ${f(tz)} Tz 1 0 0 1 ${f(X)} ${f(Y)} Tm (${pdfEsc(t)}) Tj\n`;
+  }
+  return s + 'ET\n';
+}
+
 async function makePdf(pages, sizeMode) {
-  const enc = new TextEncoder();
   const parts = [];
   let len = 0;
   const offs = [];
-  const push = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; };
+  const push = (x) => { const b = typeof x === 'string' ? latin1(x) : x; parts.push(b); len += b.length; };
   const n = pages.length;
-  const total = 2 + n * 3;
+  const total = 3 + n * 3;
 
   push('%PDF-1.4\n%âãÏÓ\n');
   offs[1] = len; push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
-  const kids = pages.map((_, i) => `${3 + i * 3} 0 R`).join(' ');
+  const kids = pages.map((_, i) => `${4 + i * 3} 0 R`).join(' ');
   offs[2] = len; push(`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${n} >>\nendobj\n`);
+  offs[3] = len; push('3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n');
 
   for (let i = 0; i < n; i++) {
     const pg = pages[i];
@@ -432,13 +545,15 @@ async function makePdf(pages, sizeMode) {
       dw = iw * s; dh = ih * s; dx = (pw - dw) / 2; dy = (ph - dh) / 2;
     }
     const f = (v) => v.toFixed(2);
-    const pObj = 3 + i * 3, cObj = pObj + 1, iObj = pObj + 2;
+    const pObj = 4 + i * 3, cObj = pObj + 1, iObj = pObj + 2;
     offs[pObj] = len;
     push(`${pObj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(pw)} ${f(ph)}] ` +
-      `/Resources << /XObject << /Im0 ${iObj} 0 R >> >> /Contents ${cObj} 0 R >>\nendobj\n`);
-    const content = `q ${f(dw)} 0 0 ${f(dh)} ${f(dx)} ${f(dy)} cm /Im0 Do Q`;
+      `/Resources << /XObject << /Im0 ${iObj} 0 R >> /Font << /F1 3 0 R >> >> /Contents ${cObj} 0 R >>\nendobj\n`);
+    const content = latin1(`q ${f(dw)} 0 0 ${f(dh)} ${f(dx)} ${f(dy)} cm /Im0 Do Q\n` + ocrLayer(pg, dx, dy, dw, dh));
     offs[cObj] = len;
-    push(`${cObj} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+    push(`${cObj} 0 obj\n<< /Length ${content.length} >>\nstream\n`);
+    push(content);
+    push('\nendstream\nendobj\n');
     offs[iObj] = len;
     push(`${iObj} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${iw} /Height ${ih} ` +
       `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpg.length} >>\nstream\n`);
@@ -454,19 +569,76 @@ async function makePdf(pages, sizeMode) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Keadaan aplikasi                                                    */
+/* Keadaan aplikasi & tetapan                                           */
 /* ------------------------------------------------------------------ */
-let pages = [];      // {id, order, original, quad, rotation, filter, processed, w, h, url}
+let pages = [];      // {id, order, created, original, quad, rotation, filter, processed, w, h, ocr, driveId, driveSynced, docsSynced, url}
 let cur = null;      // sesi suntingan semasa
 let lastFilter = localStorage.getItem('lastFilter') || 'magic';
+
+const DEFAULTS = {
+  autoOcr: true, ocrLang: 'msa+eng',
+  format: 'pdf', pageSize: localStorage.getItem('pageSize') || 'a4',
+  driveClientId: '', driveFolder: 'Pengimbas Dokumen',
+  driveAuto: true, drivePages: true, drivePdf: true, driveDocs: false,
+};
+let settings = { ...DEFAULTS };
+try { Object.assign(settings, JSON.parse(localStorage.getItem('settings') || '{}')); } catch {}
+const saveSettings = () => localStorage.setItem('settings', JSON.stringify(settings));
+
+function persist(pg) {
+  const r = { ...pg };
+  delete r.url;
+  return DB.put(r);
+}
 
 function show(id) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === id));
 }
 
-function defaultName() {
-  const d = new Date(), p = (n) => String(n).padStart(2, '0');
-  return `Imbasan_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+const pad2 = (n) => String(n).padStart(2, '0');
+function stamp(t, secs) {
+  const d = new Date(t);
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${secs ? pad2(d.getSeconds()) : ''}`;
+}
+const defaultName = () => 'Imbasan_' + stamp(Date.now());
+const pageFileName = (pg) => `Imbasan_${stamp(pg.created || Date.now(), true)}_${pg.id.slice(-4)}`;
+const docBase = () => ($('#docName').value.trim() || defaultName()).replace(/[\\/:*?"<>|]+/g, '_');
+
+/* ---------- Status OCR & Drive ---------- */
+const ocrState = { running: null, page: null, progress: 0, phase: '', skip: new Set() };
+const driveState = { busy: false, again: false, files: [], error: '' };
+
+const driveOn = () => !!settings.driveClientId;
+const pagePendingDrive = (pg) => settings.driveAuto && ((settings.drivePages && !pg.driveSynced) || (settings.driveDocs && !pg.docsSynced));
+const drivePendingCount = () => (driveOn() ? pages.filter(pagePendingDrive).length + driveState.files.length : 0);
+
+function renderStatus() {
+  const el = $('#statusLine');
+  const msgs = [];
+  if (ocrState.page) {
+    const n = pages.indexOf(ocrState.page) + 1;
+    msgs.push(ocrState.phase === 'load' ? '🔤 Memuat data OCR…' : `🔤 OCR halaman ${n}… ${Math.round(ocrState.progress * 100)}%`);
+  }
+  if (driveOn()) {
+    const pend = drivePendingCount();
+    if (driveState.busy) msgs.push(`☁ Memuat naik… (${pend})`);
+    else if (pend && !Drive.valid()) msgs.push(`☁ ${pend} menunggu — tekan untuk log masuk Google`);
+    else if (driveState.error) msgs.push('☁ ' + driveState.error);
+    else if (pend) msgs.push(`☁ ${pend} menunggu`);
+    else if (pages.length && settings.driveAuto) msgs.push('☁ Semua telah dimuat naik');
+  }
+  el.textContent = msgs.join('  ·  ');
+  el.hidden = !msgs.length;
+  el.classList.toggle('clickable', driveOn() && drivePendingCount() > 0 && !driveState.busy);
+  document.querySelectorAll('.thumb').forEach((t) => {
+    const pg = pages.find((p) => p.id === t.dataset.id);
+    if (!pg) return;
+    const bits = [];
+    if (pg.ocr) bits.push('<span title="Teks dikenal pasti">T</span>');
+    else if (ocrState.page === pg) bits.push('<span>…</span>');
+    if (driveOn() && settings.driveAuto) bits.push(pagePendingDrive(pg) ? '<span title="Menunggu Drive">⏳</span>' : '<span title="Di Google Drive">☁</span>');
+    t.querySelector('.badges').innerHTML = bits.join('');
+  });
 }
 
 function renderHome() {
@@ -476,7 +648,8 @@ function renderHome() {
     if (!pg.url) pg.url = URL.createObjectURL(pg.processed);
     const b = document.createElement('button');
     b.className = 'thumb';
-    b.innerHTML = `<img alt=""><span class="num">${i + 1}</span>`;
+    b.dataset.id = pg.id;
+    b.innerHTML = `<img alt=""><span class="num">${i + 1}</span><span class="badges"></span>`;
     b.querySelector('img').src = pg.url;
     b.onclick = () => openExisting(pg);
     grid.appendChild(b);
@@ -484,7 +657,9 @@ function renderHome() {
   $('#empty').hidden = pages.length > 0;
   $('#exportBar').hidden = pages.length === 0;
   $('#btnClear').style.visibility = pages.length ? 'visible' : 'hidden';
+  $('#btnDrive').hidden = !driveOn();
   if (!$('#docName').value) $('#docName').value = defaultName();
+  renderStatus();
 }
 
 async function loadPages() {
@@ -495,11 +670,144 @@ async function loadPages() {
     pages = [];
   }
   renderHome();
+  runOcrQueue();
+  if (Drive.valid()) flushDrive();
+}
+
+/* ---------- Giliran OCR (latar belakang) ---------- */
+OCR.onProgress((m) => {
+  if (!ocrState.page) return;
+  if (m.status === 'recognizing text') { ocrState.phase = 'rec'; ocrState.progress = m.progress || 0; }
+  else if (/load|initializ/.test(m.status)) ocrState.phase = 'load';
+  renderStatus();
+});
+
+function runOcrQueue() {
+  if (ocrState.running) return ocrState.running;
+  if (!settings.autoOcr) return Promise.resolve();
+  ocrState.running = (async () => {
+    await null; // pastikan 'running' ditetapkan sebelum blok finally berjalan
+    try {
+      for (;;) {
+        const pg = pages.find((p) => !p.ocr && !ocrState.skip.has(p.id));
+        if (!pg) break;
+        ocrState.page = pg; ocrState.progress = 0; ocrState.phase = '';
+        renderStatus();
+        const blob = pg.processed;
+        try {
+          const r = await OCR.recognize(blob, settings.ocrLang, pg.w, pg.h);
+          if (pg.processed === blob && pages.includes(pg)) { pg.ocr = r; await persist(pg); }
+        } catch (e) {
+          console.warn(e);
+          pages.forEach((p) => !p.ocr && ocrState.skip.add(p.id));
+          toast('OCR tidak dapat dijalankan: ' + e.message);
+        }
+      }
+    } finally {
+      ocrState.page = null;
+      ocrState.running = null;
+      renderStatus();
+    }
+  })();
+  return ocrState.running;
+}
+
+async function waitForOcr() {
+  if (!settings.autoOcr || !pages.some((p) => !p.ocr && !ocrState.skip.has(p.id))) return;
+  busy(true, 'Menunggu OCR selesai…');
+  const t = setInterval(() => {
+    if (ocrState.page) $('#busyText').textContent = `OCR halaman ${pages.indexOf(ocrState.page) + 1}/${pages.length}… ${Math.round(ocrState.progress * 100)}%`;
+  }, 300);
+  try { await runOcrQueue(); } finally { clearInterval(t); busy(false); }
+}
+
+/* ---------- Giliran Google Drive ---------- */
+Drive.onToken(() => { driveState.error = ''; renderSettingsDrive(); flushDrive(); });
+Drive.onError((e) => { driveState.error = e.message; renderStatus(); renderSettingsDrive(); toast('Google: ' + e.message); });
+
+// Panggil dari dalam pengendali klik (tindakan pengguna) — boleh buka tetingkap log masuk Google.
+function driveKick() {
+  if (!driveOn()) return;
+  if (Drive.valid()) flushDrive();
+  else if (Drive.ready()) Drive.requestToken();
+  else Drive.init(settings.driveClientId).then(() => toast('Tekan sekali lagi untuk log masuk Google')).catch((e) => toast(e.message));
+}
+
+async function flushDrive() {
+  if (!driveOn() || !Drive.valid()) { renderStatus(); return; }
+  if (driveState.busy) { driveState.again = true; return; }
+  driveState.busy = true; driveState.again = false; driveState.error = '';
+  renderStatus();
+  let ok = true;
+  try {
+    const folderId = await Drive.ensureFolder(settings.driveFolder || DEFAULTS.driveFolder);
+    for (const pg of [...pages]) {
+      if (!pages.includes(pg) || !pagePendingDrive(pg)) continue;
+      const blob = pg.processed;
+      if (settings.drivePages && !pg.driveSynced) {
+        const r = await Drive.upload(blob, { name: pageFileName(pg) + '.jpg', folderId, fileId: pg.driveId, mime: 'image/jpeg' });
+        if (pg.processed === blob) { pg.driveId = r.id; pg.driveSynced = true; }
+      }
+      if (settings.driveDocs && !pg.docsSynced) {
+        await Drive.upload(blob, { name: pageFileName(pg) + ' (teks)', folderId, mime: 'image/jpeg', convertTo: 'application/vnd.google-apps.document' });
+        if (pg.processed === blob) pg.docsSynced = true;
+      }
+      if (pages.includes(pg)) await persist(pg);
+      renderStatus();
+    }
+    while (driveState.files.length) {
+      const f = driveState.files[0];
+      await Drive.upload(f.blob, { name: f.name, folderId, mime: f.mime });
+      driveState.files.shift();
+      toast(`☁ ${f.name} dimuat naik ke Drive`);
+    }
+  } catch (e) {
+    ok = false;
+    console.warn(e);
+    driveState.error = e.needAuth ? '' : e.message;
+    if (!e.needAuth) toast(e.message);
+  } finally {
+    driveState.busy = false;
+    renderStatus();
+  }
+  if (ok && driveState.again) flushDrive();
 }
 
 /* ---------- Tangkapan / import ---------- */
+const isPdf = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+
+async function importPdfs(pdfs) {
+  let added = 0;
+  for (const file of pdfs) {
+    try {
+      busy(true, 'Memuat penukar PDF…');
+      const canvases = await pdfToImages(file, (i, n) => { $('#busyText').textContent = `Menukar PDF: halaman ${i}/${n}…`; });
+      for (const c of canvases) {
+        const blob = await toBlob(c, 'image/jpeg', 0.9);
+        cur = { page: null, original: blob, src: c, quad: FULL_QUAD, rotation: 0, filter: 'original' };
+        await saveCurrent(false);
+        added++;
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Gagal menukar ${file.name}: ${e.message}`);
+    }
+  }
+  cur = null;
+  return added;
+}
+
 async function handleFiles(files, fromCamera) {
-  files = [...files].filter((f) => f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
+  files = [...files];
+  const pdfs = files.filter(isPdf);
+  files = files.filter((f) => !isPdf(f) && (f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name)));
+  if (pdfs.length) {
+    const n = await importPdfs(pdfs);
+    busy(false);
+    renderHome();
+    if (n) toast(`PDF ditukar kepada ${n} halaman — pilih format JPG untuk simpan sebagai gambar`);
+    afterChange();
+  }
   if (!files.length) return;
   if (files.length === 1) {
     busy(true, 'Mengesan dokumen…');
@@ -535,6 +843,13 @@ async function handleFiles(files, fromCamera) {
   busy(false);
   renderHome();
   toast(`${files.length} halaman ditambah`);
+  afterChange();
+}
+
+// Selepas halaman berubah: OCR & muat naik di latar belakang
+function afterChange() {
+  runOcrQueue();
+  flushDrive();
 }
 
 async function openExisting(pg) {
@@ -603,6 +918,21 @@ function drawCrop() {
   P.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
   c.closePath();
   c.stroke();
+  // pemegang tengah sisi (tarik seluruh sisi)
+  for (let i = 0; i < 4; i++) {
+    const p = P[i], q = P[(i + 1) % 4];
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    const ang = Math.atan2(q[1] - p[1], q[0] - p[0]);
+    c.save();
+    c.translate(mx, my);
+    c.rotate(ang);
+    c.beginPath();
+    const L = (crop.drag === 4 + i ? 34 : 26) * r, T = 10 * r;
+    c.roundRect ? c.roundRect(-L / 2, -T / 2, L, T, T / 2) : c.rect(-L / 2, -T / 2, L, T);
+    c.fillStyle = '#fff';
+    c.fill();
+    c.restore();
+  }
   P.forEach(([x, y], i) => {
     c.beginPath();
     c.arc(x, y, (crop.drag === i ? 16 : 12) * r, 0, Math.PI * 2);
@@ -644,43 +974,76 @@ function evtNorm(e) {
   const r = cropCanvas.getBoundingClientRect();
   return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, r];
 }
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const cropWrap = $('#cropWrap');
 
-cropCanvas.addEventListener('pointerdown', (e) => {
-  if (!cur) return;
+// Acara dipasang pada seluruh kawasan (bukan kanvas sahaja) supaya sentuhan
+// yang sedikit terkeluar dari gambar masih boleh menarik sudut/sisi.
+cropWrap.addEventListener('pointerdown', (e) => {
+  if (!cur || crop.drag >= 0) return;
   const [nx, ny, r] = evtNorm(e);
-  let best = -1, bd = 44; // px
-  cur.quad.forEach(([x, y], i) => {
-    const d = Math.hypot((x - nx) * r.width, (y - ny) * r.height);
-    if (d < bd) { bd = d; best = i; }
+  const Q = cur.quad;
+  const cands = Q.map((p) => p);
+  for (let i = 0; i < 4; i++) {
+    const p = Q[i], q = Q[(i + 1) % 4];
+    cands.push([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]);
+  }
+  let best = -1, bd = 56; // px
+  cands.forEach(([x, y], i) => {
+    const dd = Math.hypot((x - nx) * r.width, (y - ny) * r.height) + (i >= 4 ? 8 : 0); // utamakan sudut
+    if (dd < bd) { bd = dd; best = i; }
   });
   if (best < 0) return;
   crop.drag = best;
-  crop.grab = [cur.quad[best][0] - nx, cur.quad[best][1] - ny];
-  cropCanvas.setPointerCapture(e.pointerId);
+  crop.start = [nx, ny];
+  crop.q0 = Q.map((p) => p.slice());
+  crop.pid = e.pointerId;
+  try { cropWrap.setPointerCapture(e.pointerId); } catch {}
   loupe.hidden = false;
-  drawLoupe(...cur.quad[best]);
+  drawLoupe(...cands[best]);
   drawCrop();
   e.preventDefault();
 });
-cropCanvas.addEventListener('pointermove', (e) => {
-  if (crop.drag < 0) return;
+cropWrap.addEventListener('pointermove', (e) => {
+  if (crop.drag < 0 || e.pointerId !== crop.pid) return;
+  e.preventDefault();
   const [nx, ny] = evtNorm(e);
-  const x = Math.min(1, Math.max(0, nx + crop.grab[0]));
-  const y = Math.min(1, Math.max(0, ny + crop.grab[1]));
-  cur.quad = cur.quad.slice();
-  cur.quad[crop.drag] = [x, y];
+  const dx = nx - crop.start[0], dy = ny - crop.start[1];
+  const q = crop.q0.map((p) => p.slice());
+  let look;
+  if (crop.drag < 4) {
+    const i = crop.drag;
+    q[i] = [clamp01(crop.q0[i][0] + dx), clamp01(crop.q0[i][1] + dy)];
+    look = q[i];
+  } else {
+    const i = crop.drag - 4, j = (i + 1) % 4;
+    // hadkan anjakan supaya kedua-dua hujung kekal dalam gambar
+    let ddx = dx, ddy = dy;
+    for (const k of [i, j]) {
+      ddx = Math.min(1 - crop.q0[k][0], Math.max(-crop.q0[k][0], ddx));
+      ddy = Math.min(1 - crop.q0[k][1], Math.max(-crop.q0[k][1], ddy));
+    }
+    q[i] = [crop.q0[i][0] + ddx, crop.q0[i][1] + ddy];
+    q[j] = [crop.q0[j][0] + ddx, crop.q0[j][1] + ddy];
+    look = [(q[i][0] + q[j][0]) / 2, (q[i][1] + q[j][1]) / 2];
+  }
+  cur.quad = q;
   drawCrop();
-  drawLoupe(x, y);
+  drawLoupe(...look);
 });
-const endDrag = () => {
-  if (crop.drag < 0) return;
+const endDrag = (e) => {
+  if (crop.drag < 0 || (e && e.pointerId !== crop.pid)) return;
   crop.drag = -1;
   loupe.hidden = true;
   cur.quad = orderQuad(cur.quad);
   drawCrop();
 };
-cropCanvas.addEventListener('pointerup', endDrag);
-cropCanvas.addEventListener('pointercancel', endDrag);
+cropWrap.addEventListener('pointerup', endDrag);
+cropWrap.addEventListener('pointercancel', endDrag);
+cropWrap.addEventListener('lostpointercapture', endDrag);
+// Sandaran untuk pelayar yang abaikan touch-action: halang tatal/tarik-untuk-muat-semula
+cropWrap.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+cropWrap.addEventListener('touchstart', (e) => { if (e.touches.length === 1) e.preventDefault(); }, { passive: false });
 window.addEventListener('resize', () => { if ($('#crop').classList.contains('active')) layoutCrop(); });
 
 $('#cropAuto').onclick = () => {
@@ -700,6 +1063,7 @@ $('#cropNext').onclick = async () => {
   await nextFrame();
   try {
     cur.warped = warp(cur.src, cur.quad);
+    if (cur.page) cur.dirty = true;
     openEdit();
   } finally {
     busy(false);
@@ -721,6 +1085,7 @@ function buildOutput() {
 }
 
 async function renderPreview() {
+  cur.ocr = null;
   document.querySelectorAll('#filters button').forEach((b) => b.classList.toggle('on', b.dataset.f === cur.filter));
   busy(true);
   await nextFrame();
@@ -738,12 +1103,13 @@ $('#filters').addEventListener('click', (e) => {
   const f = e.target.dataset && e.target.dataset.f;
   if (!f || !cur) return;
   cur.filter = f;
+  cur.dirty = true;
   lastFilter = f;
   localStorage.setItem('lastFilter', f);
   renderPreview();
 });
-$('#rotL').onclick = () => { cur.rotation = (cur.rotation + 270) % 360; renderPreview(); };
-$('#rotR').onclick = () => { cur.rotation = (cur.rotation + 90) % 360; renderPreview(); };
+$('#rotL').onclick = () => { cur.rotation = (cur.rotation + 270) % 360; cur.dirty = true; renderPreview(); };
+$('#rotR').onclick = () => { cur.rotation = (cur.rotation + 90) % 360; cur.dirty = true; renderPreview(); };
 $('#recrop').onclick = () => openCrop();
 $('#editBack').onclick = () => { cur = null; show('home'); };
 
@@ -753,17 +1119,22 @@ async function saveCurrent(useCurOut = true) {
   const pg = cur.page || {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     order: pages.length ? pages[pages.length - 1].order + 1 : 0,
+    created: Date.now(),
     original: cur.original,
   };
-  Object.assign(pg, { quad: cur.quad, rotation: cur.rotation, filter: cur.filter, processed: blob, w: out.width, h: out.height });
+  Object.assign(pg, {
+    quad: cur.quad, rotation: cur.rotation, filter: cur.filter, processed: blob, w: out.width, h: out.height,
+    ocr: cur.ocr || null, driveSynced: false, docsSynced: false,
+  });
+  ocrState.skip.delete(pg.id);
   if (pg.url) { URL.revokeObjectURL(pg.url); pg.url = null; }
-  const rec = { ...pg };
-  delete rec.url;
-  await DB.put(rec);
+  await persist(pg);
   if (!cur.page) pages.push(pg);
 }
 
 $('#editSave').onclick = async () => {
+  if (cur.page && !cur.dirty) { cur = null; show('home'); return; } // tiada perubahan
+  if (settings.driveAuto) driveKick(); // log masuk Google (jika perlu) semasa masih dalam tindakan pengguna
   busy(true, 'Menyimpan…');
   try {
     const isNew = !cur.page;
@@ -773,6 +1144,7 @@ $('#editSave').onclick = async () => {
     renderHome();
     show('home');
     toast('Halaman disimpan');
+    afterChange();
     if (isNew && fromCamera && confirm('Imbas halaman seterusnya?')) $('#inCamera').click();
   } catch (e) {
     alert('Gagal menyimpan: ' + e.message);
@@ -816,28 +1188,87 @@ function download(blob, name) {
 
 $('#saveJpg').onclick = async () => {
   const blob = await toBlob(cur.out || buildOutput(), 'image/jpeg', 0.92);
-  download(blob, `${$('#docName').value || defaultName()}.jpg`);
+  download(blob, `${cur.page ? pageFileName(cur.page) : docBase()}.jpg`);
+};
+
+/* ---------- Panel teks (OCR) ---------- */
+$('#btnText').onclick = async () => {
+  const panel = $('#textPanel');
+  let ocr = cur.ocr || (cur.page && !cur.dirty ? cur.page.ocr : null);
+  if (!ocr) {
+    busy(true, 'Mengenal pasti teks…');
+    try {
+      const o = cur.out || (cur.out = buildOutput());
+      const blob = await toBlob(o);
+      ocr = await OCR.recognize(blob, settings.ocrLang, o.width, o.height);
+      cur.ocr = ocr;
+      if (cur.page && !cur.dirty) { cur.page.ocr = ocr; await persist(cur.page); renderStatus(); }
+    } catch (e) {
+      alert('OCR gagal: ' + e.message);
+      return;
+    } finally {
+      busy(false);
+    }
+  }
+  $('#ocrText').value = ocr.text || '';
+  $('#ocrEmpty').hidden = !!(ocr.text && ocr.text.trim());
+  panel.hidden = false;
+};
+$('#textClose').onclick = () => { $('#textPanel').hidden = true; };
+$('#textCopy').onclick = async () => {
+  const t = $('#ocrText').value;
+  try { await navigator.clipboard.writeText(t); }
+  catch { $('#ocrText').select(); document.execCommand('copy'); }
+  toast('Teks disalin');
 };
 
 /* ---------- Eksport ---------- */
-const fileName = () => ($('#docName').value.trim() || defaultName()).replace(/[\\/:*?"<>|]+/g, '_') + '.pdf';
+function ocrTextAll() {
+  return pages.map((p, i) => `--- Halaman ${i + 1} ---\n${p.ocr ? p.ocr.text : '(tiada teks)'}`).join('\n\n') + '\n';
+}
 
-async function buildPdfFile() {
-  busy(true, 'Menjana PDF…');
+async function buildExport(fmt) {
+  if (fmt === 'pdf' || fmt === 'txt') await waitForOcr();
+  busy(true, fmt === 'pdf' ? 'Menjana PDF…' : 'Menyediakan fail…');
   await nextFrame();
   try {
-    const blob = await makePdf(pages, $('#pageSize').value);
-    return new File([blob], fileName(), { type: 'application/pdf' });
+    const base = docBase();
+    if (fmt === 'pdf') {
+      const blob = await makePdf(pages, settings.pageSize);
+      return [new File([blob], base + '.pdf', { type: 'application/pdf' })];
+    }
+    if (fmt === 'txt') return [new File([ocrTextAll()], base + '.txt', { type: 'text/plain' })];
+    return pages.map((p, i) => new File([p.processed], pages.length > 1 ? `${base}_${i + 1}.jpg` : `${base}.jpg`, { type: 'image/jpeg' }));
   } finally {
     busy(false);
   }
 }
 
-$('#btnPdf').onclick = async () => {
+$('#btnExport').onclick = async () => {
   if (!pages.length) return;
-  const f = await buildPdfFile();
-  download(f, f.name);
-  toast(`PDF disimpan (${(f.size / 1024 / 1024).toFixed(1)} MB)`);
+  const fmt = settings.format;
+  const toDrive = driveOn() && settings.driveAuto && settings.drivePdf && fmt === 'pdf';
+  if (toDrive) driveKick();
+  const files = await buildExport(fmt);
+  for (let i = 0; i < files.length; i++) {
+    download(files[i], files[i].name);
+    if (files.length > 1) await new Promise((r) => setTimeout(r, 350));
+  }
+  const mb = files.reduce((a, f) => a + f.size, 0) / 1048576;
+  toast(`${files.length > 1 ? files.length + ' fail' : files[0].name} disimpan (${mb.toFixed(1)} MB)`);
+  if (toDrive) {
+    driveState.files.push({ blob: files[0], name: files[0].name, mime: 'application/pdf' });
+    flushDrive();
+  }
+};
+
+$('#btnDrive').onclick = async () => {
+  if (!pages.length) return;
+  driveKick();
+  const files = await buildExport(settings.format);
+  files.forEach((f) => driveState.files.push({ blob: f, name: f.name, mime: f.type }));
+  if (!Drive.valid()) toast('Log masuk Google — fail akan dimuat naik selepas itu');
+  flushDrive();
 };
 
 if (navigator.canShare && navigator.canShare({ files: [new File([''], 'x.pdf', { type: 'application/pdf' })] })) {
@@ -845,19 +1276,23 @@ if (navigator.canShare && navigator.canShare({ files: [new File([''], 'x.pdf', {
 }
 $('#btnShare').onclick = async () => {
   if (!pages.length) return;
-  const f = await buildPdfFile();
+  const files = await buildExport(settings.format);
   try {
-    await navigator.share({ files: [f], title: f.name });
+    await navigator.share({ files, title: files[0].name });
   } catch (e) {
-    if (e.name !== 'AbortError') download(f, f.name);
+    if (e.name === 'NotAllowedError') toast('Tekan Kongsi sekali lagi');
+    else if (e.name !== 'AbortError') files.forEach((f) => download(f, f.name));
   }
 };
 
+$('#statusLine').onclick = () => { if (driveOn() && drivePendingCount()) driveKick(); };
+
 $('#btnClear').onclick = async () => {
-  if (!pages.length || !confirm('Padam semua halaman?')) return;
+  if (!pages.length || !confirm('Padam semua halaman dari telefon? (Fail di Google Drive tidak dipadam)')) return;
   await DB.clear();
   pages.forEach((p) => p.url && URL.revokeObjectURL(p.url));
   pages = [];
+  driveState.files = [];
   $('#docName').value = '';
   renderHome();
 };
@@ -865,9 +1300,67 @@ $('#btnClear').onclick = async () => {
 $('#inCamera').onchange = (e) => { handleFiles(e.target.files, true); e.target.value = ''; };
 $('#inGallery').onchange = (e) => { handleFiles(e.target.files, false); e.target.value = ''; };
 
-$('#pageSize').value = localStorage.getItem('pageSize') || 'a4';
-$('#pageSize').onchange = (e) => localStorage.setItem('pageSize', e.target.value);
+/* ---------- Format pada bar eksport ---------- */
+function syncExportBar() {
+  $('#fmt').value = settings.format;
+  $('#pageSize').value = settings.pageSize;
+  $('#pageSizeWrap').hidden = settings.format !== 'pdf';
+  $('#btnExport').textContent = { pdf: 'Simpan PDF', jpg: 'Simpan JPG', txt: 'Simpan Teks' }[settings.format];
+}
+$('#fmt').onchange = (e) => { settings.format = e.target.value; saveSettings(); syncExportBar(); };
+$('#pageSize').onchange = (e) => { settings.pageSize = e.target.value; saveSettings(); };
 
+/* ---------- Tetapan ---------- */
+function renderSettingsDrive() {
+  const st = $('#driveState');
+  if (!driveOn()) { st.textContent = 'Belum ditetapkan — masukkan Client ID di atas.'; $('#driveConnect').hidden = true; $('#driveDisconnect').hidden = true; return; }
+  const on = Drive.valid() || Drive.connected();
+  st.textContent = Drive.valid() ? '✅ Disambungkan' : on ? 'Disambungkan (log masuk semula diperlukan bila muat naik)' : 'Belum disambungkan';
+  $('#driveConnect').hidden = Drive.valid();
+  $('#driveDisconnect').hidden = !on;
+}
+
+function openSettings() {
+  document.querySelectorAll('#settings [data-key]').forEach((el) => {
+    const v = settings[el.dataset.key];
+    if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+  });
+  $('#originHint').textContent = location.origin;
+  renderSettingsDrive();
+  show('settings');
+}
+document.querySelectorAll('#settings [data-key]').forEach((el) => {
+  el.addEventListener('change', () => {
+    const k = el.dataset.key;
+    settings[k] = el.type === 'checkbox' ? el.checked : el.value.trim();
+    if (k === 'driveClientId') {
+      Drive.disconnect();
+      if (settings.driveClientId) Drive.init(settings.driveClientId).catch((e) => toast(e.message));
+    }
+    saveSettings();
+    syncExportBar();
+    renderSettingsDrive();
+    if (k === 'autoOcr' && settings.autoOcr) { ocrState.skip.clear(); runOcrQueue(); }
+  });
+});
+$('#btnSettings').onclick = openSettings;
+$('#settingsBack').onclick = () => { renderHome(); show('home'); afterChange(); };
+$('#driveConnect').onclick = () => {
+  if (!Drive.ready()) {
+    Drive.init(settings.driveClientId).then(() => toast('Tekan "Sambung" sekali lagi')).catch((e) => toast(e.message));
+    return;
+  }
+  Drive.requestToken(true);
+};
+$('#driveDisconnect').onclick = () => { Drive.disconnect(); driveState.error = ''; renderSettingsDrive(); renderStatus(); };
+$('#ocrRedo').onclick = () => {
+  pages.forEach((p) => { p.ocr = null; });
+  ocrState.skip.clear();
+  Promise.all(pages.map(persist)).then(() => { toast('OCR semula dimulakan'); runOcrQueue(); renderHome(); });
+};
+
+syncExportBar();
+if (driveOn()) Drive.init(settings.driveClientId).catch(() => {});
 loadPages();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
