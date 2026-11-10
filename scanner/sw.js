@@ -1,4 +1,4 @@
-const CACHE = 'pengimbas-v4';
+const CACHE = 'pengimbas-v5';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'ocr.js', 'drive.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
