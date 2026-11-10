@@ -15,24 +15,68 @@
 </head>
 <body>
 
-<!-- ========== HOME ========== -->
+<!-- ========== UTAMA ========== -->
 <section id="home" class="view active">
   <header class="bar">
     <h1>Pengimbas Dokumen</h1>
     <button id="btnClear" class="icon-btn" title="Padam semua" aria-label="Padam semua">🗑</button>
     <button id="btnSettings" class="icon-btn" title="Tetapan" aria-label="Tetapan">⚙</button>
   </header>
-  <div id="statusLine" class="status-line" hidden></div>
+
+  <div class="mode-bar" id="modeBar">
+    <button class="seg" data-mode="single">Tunggal</button>
+    <button class="seg" data-mode="batch">Batch</button>
+  </div>
+
+  <div class="batch-bar" id="batchBar" hidden>
+    <div class="batch-info">
+      <input id="batchName" class="doc-name" type="text" placeholder="Nama klien / dokumen" aria-label="Nama batch">
+      <span id="batchCount" class="hint"></span>
+    </div>
+    <button id="batchDone" class="btn primary" hidden>✓ Selesai</button>
+  </div>
+
+  <div class="status-line" hidden></div>
 
   <main class="home-main">
     <div id="empty" class="empty">
       <div class="empty-icon">📄</div>
-      <p>Belum ada halaman.<br>Tekan <b>Kamera</b> untuk mula mengimbas.</p>
+      <p>Belum ada dokumen.<br>Tekan <b>Kamera</b> untuk mula mengimbas.</p>
+      <p class="hint">Gambar dari WhatsApp: tekan gambar → <b>Kongsi</b> → pilih <b>Pengimbas</b>.<br>(Android, selepas app dipasang ke skrin utama)</p>
     </div>
-    <div id="grid" class="grid"></div>
+    <div id="docGrid" class="grid"></div>
   </main>
 
-  <div class="export-bar" id="exportBar" hidden>
+  <nav class="actions">
+    <button id="btnGalHome" class="btn big">🖼 Galeri</button>
+    <button id="btnCamHome" class="btn big primary">📷 Kamera</button>
+  </nav>
+</section>
+
+<!-- ========== DOKUMEN ========== -->
+<section id="doc" class="view">
+  <header class="bar">
+    <button id="docBack" class="icon-btn" aria-label="Kembali">←</button>
+    <h1>Dokumen</h1>
+    <button id="docDelete" class="icon-btn" title="Padam dokumen" aria-label="Padam dokumen">🗑</button>
+  </header>
+
+  <div class="doc-head">
+    <input id="docName" class="doc-name big-input" type="text" aria-label="Nama dokumen">
+    <div class="doc-head-row">
+      <span id="docMeta" class="hint"></span>
+      <button id="docDone" class="btn primary small-btn" hidden>✓ Selesai batch</button>
+    </div>
+  </div>
+
+  <div class="status-line" hidden></div>
+
+  <main class="home-main">
+    <p id="emptyDoc" class="hint center" hidden>Tiada halaman lagi. Tekan Kamera atau Galeri di bawah.</p>
+    <div id="pageGrid" class="grid"></div>
+  </main>
+
+  <div class="export-bar">
     <label class="sel">Format
       <select id="fmt">
         <option value="pdf">PDF</option>
@@ -47,27 +91,20 @@
         <option value="fit">Ikut imej</option>
       </select>
     </label>
-    <input id="docName" class="doc-name" type="text" aria-label="Nama fail">
     <div class="export-btns">
       <button id="btnExport" class="btn primary">Simpan PDF</button>
       <button id="btnShare" class="btn" hidden>Kongsi</button>
-      <button id="btnDrive" class="btn" hidden title="Muat naik ke Google Drive">☁ Drive</button>
+      <button id="btnDrive" class="btn" hidden title="Muat naik PDF ke Google Drive">☁ Drive</button>
     </div>
   </div>
 
   <nav class="actions">
-    <label class="btn big">
-      🖼 Galeri
-      <input id="inGallery" type="file" accept="image/*,application/pdf,.pdf" multiple hidden>
-    </label>
-    <label class="btn big primary">
-      📷 Kamera
-      <input id="inCamera" type="file" accept="image/*" capture="environment" hidden>
-    </label>
+    <button id="btnGalDoc" class="btn big">🖼 + Galeri</button>
+    <button id="btnCamDoc" class="btn big primary">📷 + Kamera</button>
   </nav>
 </section>
 
-<!-- ========== CROP ========== -->
+<!-- ========== POTONG ========== -->
 <section id="crop" class="view">
   <header class="bar">
     <button id="cropCancel" class="icon-btn" aria-label="Batal">✕</button>
@@ -85,7 +122,7 @@
   </nav>
 </section>
 
-<!-- ========== EDIT ========== -->
+<!-- ========== SUNTING ========== -->
 <section id="edit" class="view">
   <header class="bar">
     <button id="editBack" class="icon-btn" aria-label="Kembali">✕</button>
@@ -151,7 +188,7 @@
         <option value="txt">Teks (.txt)</option>
       </select>
     </label>
-    <p class="hint">Untuk menukar fail PDF sedia ada kepada JPG: tekan <b>Galeri</b>, pilih fail PDF, kemudian pilih format JPG dan tekan Simpan.</p>
+    <p class="hint">Untuk menukar fail PDF sedia ada kepada JPG: tekan <b>Galeri</b>, pilih fail PDF. Setiap PDF menjadi satu dokumen; buka dokumen itu dan simpan sebagai JPG.</p>
 
     <h2>Google Drive</h2>
     <label class="field">Google OAuth Client ID
@@ -166,9 +203,9 @@
       <input type="text" data-key="driveFolder">
     </label>
     <label class="row"><input type="checkbox" data-key="driveAuto"> Muat naik automatik</label>
-    <label class="row sub"><input type="checkbox" data-key="drivePages"> Setiap halaman yang diimbas (JPG)</label>
-    <label class="row sub"><input type="checkbox" data-key="drivePdf"> PDF bila tekan "Simpan PDF"</label>
-    <label class="row sub"><input type="checkbox" data-key="driveDocs"> Salinan Google Docs (OCR Google — sesuai tulisan tangan)</label>
+    <label class="row sub"><input type="checkbox" data-key="drivePages"> Dokumen <b>Tunggal</b>: setiap gambar sebagai JPG</label>
+    <label class="row sub"><input type="checkbox" data-key="drivePdf"> PDF dokumen: <b>Batch</b> (bila Selesai) dan dokumen berbilang halaman</label>
+    <label class="row sub"><input type="checkbox" data-key="driveDocs"> Salinan Google Docs untuk setiap gambar Tunggal (OCR Google — sesuai tulisan tangan)</label>
     <details class="help">
       <summary>Cara dapatkan Client ID (sekali sahaja)</summary>
       <ol>
@@ -185,6 +222,9 @@
 
 <div id="busy" class="busy" hidden><div class="spinner"></div><p id="busyText">Memproses…</p></div>
 <div id="toast" class="toast" hidden></div>
+
+<input id="inCamera" type="file" accept="image/*" capture="environment" hidden>
+<input id="inGallery" type="file" accept="image/*,application/pdf,.pdf" multiple hidden>
 
 <script src="ocr.js"></script>
 <script src="drive.js"></script>

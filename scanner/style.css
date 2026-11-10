@@ -168,3 +168,42 @@ button, select, input { font: inherit; }
 .help summary { font-weight: 600; cursor: pointer; }
 .help li { margin: 6px 0; font-size: 14px; }
 .help code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+
+/* ---------- Tunggal / Batch ---------- */
+.mode-bar { display: flex; gap: 0; padding: 10px 12px 0; background: var(--card); flex: none; }
+.seg {
+  flex: 1; min-height: 40px; border: 1px solid #cbd5e1; background: #fff; color: var(--mut);
+  font-weight: 600; cursor: pointer;
+}
+.seg:first-child { border-radius: 10px 0 0 10px; }
+.seg:last-child { border-radius: 0 10px 10px 0; border-left: 0; }
+.seg.on { background: var(--pri); border-color: var(--pri); color: #fff; }
+.batch-bar {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: var(--card); border-bottom: 1px solid #e2e8f0; flex: none;
+}
+.batch-bar[hidden] { display: none; }
+.batch-info { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.batch-info .doc-name { width: 100%; }
+.doc-head { background: var(--card); padding: 10px 12px; border-bottom: 1px solid #e2e8f0; flex: none; }
+.big-input { font-size: 17px; font-weight: 600; width: 100%; }
+.doc-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.small-btn { min-height: 36px; padding: 0 12px; font-size: 14px; }
+.doc-head-row .hint, .hint.center { margin: 0; }
+.hint.center { text-align: center; margin-top: 24px; }
+.status-line {
+  flex: none; padding: 6px 12px; font-size: 13px; background: #ccfbf1; color: #134e4a;
+  border-bottom: 1px solid #99f6e4;
+}
+.status-line[hidden] { display: none; }
+.status-line.clickable { cursor: pointer; text-decoration: underline; }
+
+/* kad dokumen & halaman */
+.thumb .num { top: 6px; bottom: auto; left: 6px; }
+.thumb .dname {
+  position: absolute; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,.8); color: #fff;
+  font-size: 12px; font-weight: 600; padding: 5px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-align: left;
+}
+.thumb.open-batch { outline: 3px solid var(--pri); outline-offset: -3px; }
+.thumb .badges { top: auto; bottom: 30px; right: 6px; }
